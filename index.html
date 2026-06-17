@@ -1063,6 +1063,12 @@ const STARTER_TILES = [
 const STARTER_BLOCKERS = [
   ['assets/cloud/', 'cloud-tile.png', { anchorX: 0.5, anchorY: 0.62 }]
 ];
+// Preloaded BACKGROUND tiles (sit below the world floor). The normalised water
+// tile (240px diamond) ships ready in the Background tab; anchor puts its top
+// surface at the cell. Users can still upload their own.
+const STARTER_BACKGROUNDS = [
+  ['assets/bg-tile/', 'water-tile.png', { anchorX: 0.5, anchorY: 0.26 }]
+];
 function loadStarterTiles() {
   // de-dup by category+file so the SAME tile can live in both 'tile' (playable)
   // and 'decotile' (non-playable ground).
@@ -1139,7 +1145,25 @@ function saveNow() {
   }
 }
 function scheduleSave() { if (!S.ready) return; clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 600); }
-function markReady() { S.ready = true; renderCamRows(); saveNow(); }
+function markReady() { S.ready = true; renderCamRows(); saveNow(); loadStarterBackgrounds(); }
+
+/** Ensure the preloaded background tiles are present after any world loads
+ *  (session restore, default world, or starter set) — deduped by file. */
+function loadStarterBackgrounds() {
+  const have = new Set(Object.values(S.assets).filter((a) => a.category === 'background').map((a) => a.file));
+  for (const [dir, file, calib] of STARTER_BACKGROUNDS) {
+    if (have.has(file)) continue;
+    const img = new Image();
+    img.onload = () => {
+      makeAsset(img, file, 'background', calib);
+      renderAssets();
+      if (S.category === 'background') refreshInspector();
+      scheduleSave();
+    };
+    img.onerror = () => {};
+    img.src = dir + file;
+  }
+}
 window.addEventListener('beforeunload', saveNow);
 window.addEventListener('pagehide', saveNow);
 
