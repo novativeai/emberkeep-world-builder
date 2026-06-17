@@ -103,6 +103,7 @@
       <button id="tabGround">🟤 Non-play <span class="count" id="groundCount">(0)</span></button>
       <button id="tabDecor">🌿 Decor <span class="count" id="decorCount">(0)</span></button>
       <button id="tabBlockers">☁ Blockers <span class="count" id="blockerCount">(0)</span></button>
+      <button id="tabBackground">🖼 Background <span class="count" id="backgroundCount">(0)</span></button>
       <button id="tabMerge">🔮 Merge <span class="count" id="mergeCount">(0)</span></button>
     </div>
     <div class="hint" id="catHint">Tiles are the floor — one per cell. Click a card to select, then Paint.</div>
@@ -110,6 +111,10 @@
       <input id="fileInput" type="file" accept="image/png,image/webp" multiple hidden /></div>
     <div id="mergeActions" style="padding:0 8px 6px; display:none; gap:6px">
       <button id="resetMerge" style="width:100%" title="Revert every merge slot to its placeholder">↺ Reset all merge art to placeholders</button>
+    </div>
+    <div id="backgroundActions" style="padding:0 8px 6px; display:none; flex-direction:column; gap:6px">
+      <button id="fillBackground" style="width:100%" title="Fill the world's bounding box + a 10-tile border with the selected background">⛶ Fill world + 10-tile border</button>
+      <button id="clearBackground" style="width:100%" title="Remove every background placement">⌫ Clear all backgrounds</button>
     </div>
     <div id="assetGrid"></div>
 
@@ -181,7 +186,11 @@ const S = {
 };
 const uid = () => S.nextId++;
 
-const CATEGORIES = ['tile', 'decotile', 'decor', 'blocker'];
+const CATEGORIES = ['tile', 'decotile', 'decor', 'blocker', 'background'];
+// Backgrounds sit BELOW the world tiles (one per cell) so the floor superposes
+// over them. A "fill" stamps them across the whole map plus a 10-tile border.
+const isBackground = (a) => a && a.category === 'background';
+const BG_FILL_MARGIN = 10;
 
 // The full merge-item library: every game element, pre-labelled. Drop your own
 // art onto any slot to replace its placeholder one-by-one (export carries the map).
@@ -319,10 +328,14 @@ function render() {
     drawDiamond(o.x, o.y, 'rgba(247,164,55,0.6)', 'rgba(247,164,55,0.08)');
   }
 
-  // floor first, then everything above (decor + blockers), painter-sorted.
+  // backgrounds (below the floor), then floor, then everything above (decor +
+  // blockers), each painter-sorted.
+  const inView = (p) => p.col >= minC && p.col <= maxC && p.row >= minR && p.row <= maxR;
+  const backgrounds = S.placements.filter((p) => isBackground(assetById(p.assetId)) && inView(p));
   const tiles = S.placements.filter((p) => isFloor(assetById(p.assetId)));
-  const above = S.placements.filter((p) => { const a = assetById(p.assetId); return a && !isFloor(a); });
+  const above = S.placements.filter((p) => { const a = assetById(p.assetId); return a && !isFloor(a) && !isBackground(a); });
   const sortKey = (p) => (p.col + p.row) * 1000 + p.z;
+  backgrounds.sort((a, b) => sortKey(a) - sortKey(b));
   tiles.sort((a, b) => sortKey(a) - sortKey(b));
   above.sort((a, b) => sortKey(a) - sortKey(b));
 
@@ -343,6 +356,7 @@ function render() {
     ctx.fillText(String(lvl), bx, by + 0.5);
     ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
   };
+  for (const p of backgrounds) { const a = assetById(p.assetId); if (a) hi(p, drawElement(a, p.col, p.row)); }
   for (const p of tiles) { const a = assetById(p.assetId); if (a) hi(p, drawElement(a, p.col, p.row)); }
   for (const p of above) {
     const a = assetById(p.assetId); if (!a) continue;
@@ -389,6 +403,7 @@ function renderAssets() {
   document.getElementById('groundCount').textContent = `(${countOf('decotile')})`;
   document.getElementById('decorCount').textContent = `(${countOf('decor')})`;
   document.getElementById('blockerCount').textContent = `(${countOf('blocker')})`;
+  document.getElementById('backgroundCount').textContent = `(${countOf('background')})`;
   const customMerge = Object.values(S.mergeSlots).filter((s) => s.custom).length;
   document.getElementById('mergeCount').textContent = `(${customMerge}/${MERGE_SLOTS.length})`;
   if (S.category === 'merge') { renderMergeLibrary(); return; }
@@ -480,12 +495,15 @@ function setCategory(cat) {
   document.getElementById('tabGround').classList.toggle('active', cat === 'decotile');
   document.getElementById('tabDecor').classList.toggle('active', cat === 'decor');
   document.getElementById('tabBlockers').classList.toggle('active', cat === 'blocker');
+  document.getElementById('tabBackground').classList.toggle('active', cat === 'background');
   document.getElementById('tabMerge').classList.toggle('active', cat === 'merge');
   // The merge library is a catalogue, not a paintable palette: swap the upload
-  // row for the merge actions.
+  // row for its actions. Background keeps upload AND adds Fill/Clear actions.
   const isMerge = cat === 'merge';
+  const isBg = cat === 'background';
   document.getElementById('uploadRow').style.display = isMerge ? 'none' : '';
   document.getElementById('mergeActions').style.display = isMerge ? 'flex' : 'none';
+  document.getElementById('backgroundActions').style.display = isBg ? 'flex' : 'none';
   document.getElementById('uploadCat').textContent =
     cat === 'blocker' ? 'cloud' : cat === 'decotile' ? 'ground' : cat;
   document.getElementById('catHint').textContent = {
@@ -493,6 +511,7 @@ function setCategory(cat) {
     decotile: 'Non-playable ground — same tiles, but decorative only (not part of the game board).',
     decor: 'Decor sits above tiles — stack multiple, default top-centred.',
     blocker: 'Cloud blockers cover cells and carry a Level tag (set it in the toolbar). Each level’s clouds clear when that level unlocks.',
+    background: 'Backgrounds sit BELOW the world tiles (one per cell) so the floor superposes over them. Paint cells, or hit ⛶ Fill to flood the whole map + a 10-tile border.',
     merge: 'The merge-item catalogue — not painted on the map. Click ⤒ Replace (or the art) to swap any slot for your own PNG. Export carries the mapping.'
   }[cat];
   // keep selection if it belongs to this category
@@ -504,7 +523,42 @@ document.getElementById('tabTiles').onclick = () => setCategory('tile');
 document.getElementById('tabGround').onclick = () => setCategory('decotile');
 document.getElementById('tabDecor').onclick = () => setCategory('decor');
 document.getElementById('tabBlockers').onclick = () => setCategory('blocker');
+document.getElementById('tabBackground').onclick = () => setCategory('background');
 document.getElementById('tabMerge').onclick = () => setCategory('merge');
+
+/* --------------------------- background fill --------------------------- */
+// Bounding box of the actual world content (everything that isn't a background).
+function worldBounds() {
+  let minC = 1e9, maxC = -1e9, minR = 1e9, maxR = -1e9, any = false;
+  for (const p of S.placements) {
+    if (isBackground(assetById(p.assetId))) continue;
+    any = true;
+    minC = Math.min(minC, p.col); maxC = Math.max(maxC, p.col);
+    minR = Math.min(minR, p.row); maxR = Math.max(maxR, p.row);
+  }
+  return any ? { minC, maxC, minR, maxR } : { minC: 0, maxC: 0, minR: 0, maxR: 0 };
+}
+document.getElementById('fillBackground').onclick = () => {
+  const a = assetById(S.selectedAssetId);
+  if (!a || a.category !== 'background') { say('Upload + select a <b>background</b> first, then Fill.'); return; }
+  const b = worldBounds();
+  const c0 = b.minC - BG_FILL_MARGIN, c1 = b.maxC + BG_FILL_MARGIN;
+  const r0 = b.minR - BG_FILL_MARGIN, r1 = b.maxR + BG_FILL_MARGIN;
+  // clear existing backgrounds, then stamp the selected one across the whole box.
+  S.placements = S.placements.filter((p) => !isBackground(assetById(p.assetId)));
+  for (let row = r0; row <= r1; row++)
+    for (let col = c0; col <= c1; col++)
+      S.placements.push({ id: uid(), assetId: a.id, col, row, z: 0 });
+  const n = (c1 - c0 + 1) * (r1 - r0 + 1);
+  renderAssets(); render(); scheduleSave();
+  say(`Filled <b>${n}</b> cells with <b>${a.name}</b> — the world${b.minC === 0 && b.maxC === 0 ? ' origin' : ''} plus a ${BG_FILL_MARGIN}-tile border.`);
+};
+document.getElementById('clearBackground').onclick = () => {
+  const before = S.placements.length;
+  S.placements = S.placements.filter((p) => !isBackground(assetById(p.assetId)));
+  render(); scheduleSave();
+  say(`Removed <b>${before - S.placements.length}</b> background tiles.`);
+};
 document.getElementById('activeLevel').addEventListener('input', (e) => {
   S.activeLevel = Math.max(1, +e.target.value || 1);
   say(`New cloud blockers will be tagged <b style="color:${levelColor(S.activeLevel)}">Level ${S.activeLevel}</b>.`);
@@ -524,8 +578,8 @@ function makeAsset(img, file, category, calib) {
     w: img.naturalWidth, h: img.naturalHeight,
     offX: calib?.offX ?? 0, offY: calib?.offY ?? 0, scale: calib?.scale ?? 1,
     anchorX: calib?.anchorX ?? 0.5,
-    // tile/decotile = centred, blocker = sits slightly high over the cell, decor = top-centred
-    anchorY: calib?.anchorY ?? (category === 'tile' || category === 'decotile' ? 0.5 : category === 'blocker' ? 0.62 : 0)
+    // tile/decotile/background = centred, blocker = sits slightly high over the cell, decor = top-centred
+    anchorY: calib?.anchorY ?? (category === 'tile' || category === 'decotile' || category === 'background' ? 0.5 : category === 'blocker' ? 0.62 : 0)
   };
   if (!S.selectedAssetId && category === S.category) S.selectedAssetId = id;
   return id;
@@ -557,11 +611,13 @@ document.getElementById('toolErase').onclick = () => setTool('erase');
 document.getElementById('toolPan').onclick = () => setTool('pan');
 
 function topElementAt(col, row) {
-  // topmost non-floor (decor/blocker) first, else the floor tile.
+  // topmost non-floor (decor/blocker) first, then the floor tile, then the background.
   const here = S.placements.filter((p) => p.col === col && p.row === row);
-  const above = here.filter((p) => { const a = assetById(p.assetId); return a && !isFloor(a); }).sort((a, b) => b.z - a.z);
+  const above = here.filter((p) => { const a = assetById(p.assetId); return a && !isFloor(a) && !isBackground(a); }).sort((a, b) => b.z - a.z);
   if (above.length) return above[0];
-  return here.find((p) => isFloor(assetById(p.assetId))) ?? null;
+  return here.find((p) => isFloor(assetById(p.assetId)))
+    ?? here.find((p) => isBackground(assetById(p.assetId)))
+    ?? null;
 }
 function paintAt(col, row) {
   if (S.category === 'merge') { say('Merge items are a catalogue — use ⤒ Replace to swap art. They are not placed on the map.'); return; }
@@ -570,6 +626,10 @@ function paintAt(col, row) {
   if (a.category === 'tile') {
     // one floor tile per cell — replace.
     S.placements = S.placements.filter((p) => !(p.col === col && p.row === row && isFloor(assetById(p.assetId))));
+    S.placements.push({ id: uid(), assetId: a.id, col, row, z: 0 });
+  } else if (a.category === 'background') {
+    // one background per cell — replace (sits below the floor tiles).
+    S.placements = S.placements.filter((p) => !(p.col === col && p.row === row && isBackground(assetById(p.assetId))));
     S.placements.push({ id: uid(), assetId: a.id, col, row, z: 0 });
   } else {
     const pl = { id: uid(), assetId: a.id, col, row, z: S.nextZ++ };
