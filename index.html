@@ -113,6 +113,7 @@
       <button id="resetMerge" style="width:100%" title="Revert every merge slot to its placeholder">↺ Reset all merge art to placeholders</button>
     </div>
     <div id="backgroundActions" style="padding:0 8px 6px; display:none; flex-direction:column; gap:6px">
+      <button id="bgStarterTiles" style="width:100%" title="Add the bundled border-grass tiles as background art (you can also Upload your own above)">⤓ Add bundled grass tiles</button>
       <button id="fillBackground" style="width:100%" title="Fill the world's bounding box + a 10-tile border with the selected background">⛶ Fill world + 10-tile border</button>
       <button id="clearBackground" style="width:100%" title="Remove every background placement">⌫ Clear all backgrounds</button>
     </div>
@@ -1070,6 +1071,7 @@ function loadStarterTiles() {
   const jobs = [
     ...STARTER_TILES.map(([file, anchorY]) => [STARTER_DIR, file, 'tile', { anchorX: 0.5, anchorY }]),
     ...STARTER_TILES.map(([file, anchorY]) => [STARTER_DIR, file, 'decotile', { anchorX: 0.5, anchorY }]),
+    ...STARTER_TILES.map(([file, anchorY]) => [STARTER_DIR, file, 'background', { anchorX: 0.5, anchorY }]),
     ...STARTER_BLOCKERS.map(([dir, file, calib]) => [dir, file, 'blocker', calib])
   ].filter(([, file, category]) => !existing.has(`${category}|${file}`));
   let loaded = 0, failed = 0, pending = jobs.length;
@@ -1093,6 +1095,28 @@ function loadStarterTiles() {
   }
 }
 document.getElementById('loadStarter').onclick = loadStarterTiles;
+
+/** Add the bundled border-grass tiles into the BACKGROUND category (works even
+ *  on the deployed default-world build, where loadStarterTiles isn't auto-run). */
+function loadBackgroundStarter() {
+  const have = new Set(Object.values(S.assets).filter((a) => a.category === 'background').map((a) => a.file));
+  const jobs = STARTER_TILES.filter(([file]) => !have.has(file));
+  if (!jobs.length) { say('The bundled grass tiles are already in the background. Upload your own for more.'); return; }
+  let pending = jobs.length, loaded = 0, failed = 0;
+  for (const [file, anchorY] of jobs) {
+    const img = new Image();
+    img.onload = () => { makeAsset(img, file, 'background', { anchorX: 0.5, anchorY }); loaded++; if (--pending === 0) done(); };
+    img.onerror = () => { failed++; if (--pending === 0) done(); };
+    img.src = STARTER_DIR + file;
+  }
+  function done() {
+    renderAssets(); refreshInspector(); render(); scheduleSave();
+    say(failed && !loaded
+      ? 'Bundled tiles not found from here — Upload your own background PNGs instead.'
+      : `Added <b>${loaded}</b> bundled grass tiles to the background — select one, then Fill or paint.`);
+  }
+}
+document.getElementById('bgStarterTiles').onclick = loadBackgroundStarter;
 document.getElementById('loadCurrent').onclick = async () => {
   if (!(await loadDefaultWorld(true))) say('No <code>default-world.json</code> is bundled next to this page.');
 };
