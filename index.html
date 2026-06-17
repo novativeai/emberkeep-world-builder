@@ -1047,17 +1047,19 @@ document.getElementById('loadProject').onclick = () => {
 /* The real border-grass set with anchorY measured per tile (grass-diamond
  * mid-axis / canvas height) so each block's tile-centre registration is exact.
  * Loaded via relative <img> src, which works under file:// and http alike. */
-const STARTER_DIR = 'assets/border-grass/';
+const STARTER_DIR = 'assets/grass-tiles/';
+// New grass tileset — iso cubes normalised to 281px wide. Each tile STEALS an
+// old border-grass name (border-grass-1..15) so the authored map, which
+// references those names, renders with the new art. 15 tiles → the old 16th
+// name is now unused. One uniform calibration fits all (240 grid → scale 0.854,
+// diamond centred at anchorY 0.34).
 const STARTER_TILES = [
-  ['border-grass-1.png', 0.2605], ['border-grass-2.png', 0.2634],
-  ['border-grass-3.png', 0.2566], ['border-grass-4.png', 0.2556],
-  ['border-grass-5.png', 0.2692], ['border-grass-6.png', 0.2566],
-  ['border-grass-7.png', 0.2444], ['border-grass-8.png', 0.2434],
-  ['border-grass-9.png', 0.3533], ['border-grass-10.png', 0.3333],
-  ['border-grass-11.png', 0.3422], ['border-grass-12.png', 0.3262],
-  ['border-grass-13.png', 0.3048], ['border-grass-14.png', 0.3138],
-  ['border-grass-15.png', 0.3191], ['border-grass-16.png', 0.3191]
+  'Tiles-out_001.png', 'Tiles-out_002.png', 'Tiles-out_003.png', 'Tiles-out_004.png',
+  'Tiles-out_005.png', 'Tiles-out_006.png', 'Tiles-out_007.png', 'Tiles-out_008.png',
+  'Tiles-out_009.png', 'Tiles-out_010.png', 'Tiles-out_011.png', 'Tiles-out_012.png',
+  'Tiles-out_013.png', 'Tiles-out_014.png', 'Tiles-out_015.png'
 ];
+const TILE_CALIB = { anchorX: 0.5, anchorY: 0.34, scale: 0.854 };
 // The normalised 1-tile cloud blocker (256x174); base-contact anchor sits high
 // so the puff overlaps neighbours like the in-game fog blanket.
 const STARTER_BLOCKERS = [
@@ -1070,25 +1072,29 @@ const STARTER_BACKGROUNDS = [
   ['assets/bg-tile/', 'water-tile.png', { anchorX: 0.5, anchorY: 0.26 }]
 ];
 function loadStarterTiles() {
-  // de-dup by category+file so the SAME tile can live in both 'tile' (playable)
-  // and 'decotile' (non-playable ground).
-  const existing = new Set(Object.values(S.assets).map((a) => `${a.category}|${a.file}`));
+  // de-dup by category+NAME (not file): the new grass tiles steal the authored
+  // border-grass names, so a name can live in both 'tile' (playable) and
+  // 'decotile' (non-playable ground), and we never double-load over a world.
+  const existing = new Set(Object.values(S.assets).map((a) => `${a.category}|${a.name}`));
+  const grass = STARTER_TILES.map((src, i) => ({ src, name: `border-grass-${i + 1}` }));
   const jobs = [
-    ...STARTER_TILES.map(([file, anchorY]) => [STARTER_DIR, file, 'tile', { anchorX: 0.5, anchorY }]),
-    ...STARTER_TILES.map(([file, anchorY]) => [STARTER_DIR, file, 'decotile', { anchorX: 0.5, anchorY }]),
-    ...STARTER_BLOCKERS.map(([dir, file, calib]) => [dir, file, 'blocker', calib])
-  ].filter(([, file, category]) => !existing.has(`${category}|${file}`));
+    ...grass.map((g) => [STARTER_DIR, g.src, g.name, 'tile', TILE_CALIB]),
+    ...grass.map((g) => [STARTER_DIR, g.src, g.name, 'decotile', TILE_CALIB]),
+    ...STARTER_BLOCKERS.map(([dir, file, calib]) => [dir, file, file.replace(/\.(png|webp)$/i, ''), 'blocker', calib])
+  ].filter(([, , name, category]) => !existing.has(`${category}|${name}`));
   let loaded = 0, failed = 0, pending = jobs.length;
   if (pending === 0) { say('Starter assets already loaded.'); return; }
-  for (const [dir, file, category, calib] of jobs) {
+  for (const [dir, src, name, category, calib] of jobs) {
     const img = new Image();
     img.onload = () => {
-      makeAsset(img, file, category, calib);
+      const id = makeAsset(img, src, category, calib);
+      S.assets[id].name = name;          // steal the authored border-grass name…
+      S.assets[id].file = name + '.png'; // …and export/embed under it
       loaded++;
       if (--pending === 0) done();
     };
     img.onerror = () => { failed++; if (--pending === 0) done(); };
-    img.src = dir + file;
+    img.src = dir + src;
   }
   function done() {
     renderAssets(); refreshInspector(); render();
