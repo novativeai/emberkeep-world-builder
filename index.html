@@ -27,6 +27,11 @@
   button.tool.active { background:var(--gold); color:#3A2B38; font-weight:bold; }
   button.primary { background:var(--moss); color:#1d3010; font-weight:bold; }
   button.warn { background:var(--lava); color:var(--cream); }
+  /* animation tool (top bar) — appears only when a decor is selected */
+  #animTool { align-items:center; gap:4px; }
+  #animTool .lbl { color:var(--gold2); white-space:nowrap; font-size:12px; }
+  button.anim { padding:4px 9px; font-size:12px; }
+  button.anim.active { background:var(--gold2); color:#3A2B38; font-weight:bold; border-color:var(--gold2); }
   input[type=number] { width:62px; }
   .sep { width:1px; height:24px; background:var(--line); margin:0 2px; }
   .spacer { flex:1; }
@@ -49,6 +54,7 @@
     background:repeating-conic-gradient(#454 0% 25%, #565 0% 50%) 0 0/12px 12px; border-radius:4px; }
   .assetCard .nm { font-size:11px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .assetCard .calib { position:absolute; top:3px; left:4px; font-size:9px; color:var(--gold2); background:rgba(36,27,34,.7); padding:0 3px; border-radius:3px; }
+  .assetCard .animb { position:absolute; bottom:23px; left:4px; font-size:12px; background:rgba(36,27,34,.72); padding:0 3px; border-radius:3px; }
   .assetCard .del { position:absolute; top:2px; right:2px; background:var(--lava); border:none; color:#fff; border-radius:4px; padding:0 5px; font-size:11px; }
   /* inspector */
   #inspector { border-top:1px solid var(--line); padding:8px 10px 6px; }
@@ -87,6 +93,13 @@
     <button id="zoomFit" title="F">Fit</button>
     <button id="gridToggle" title="G — toggle grid">▦ Grid</button>
     <button id="tagToggle" title="T — show/hide cloud level tags">☁# Tags</button>
+    <span class="sep" id="animSep" style="display:none"></span>
+    <span id="animTool" style="display:none">
+      <span class="lbl">🎬 Animate</span>
+      <button class="anim" id="animNone" title="No animation">None</button>
+      <button class="anim" id="animPuppet" title="Breathing squash & stretch, planted at the base (trees, houses)">🤸 Puppet</button>
+      <button class="anim" id="animFloat" title="Smooth up-and-down hover (merge-game float)">🎈 Floating</button>
+    </span>
     <span class="spacer"></span>
     <span id="saveDot" title="auto-saved to this browser" style="color:var(--moss); opacity:0.35; font-size:11px; transition:opacity .3s">● auto</span>
     <button id="newWorld" title="Start a fresh world (clears the auto-saved session)">✦ New</button>
@@ -130,6 +143,11 @@
       <div class="slider" id="levelRow" style="display:none">
         <label style="color:var(--gold2)">Level</label>
         <input type="number" id="instLevel" min="1" max="30" value="1" style="grid-column:2/4; width:74px" title="Which level this cloud blocks" />
+      </div>
+      <div id="animRow" style="display:none; border-top:1px dashed var(--line); margin-top:7px; padding-top:7px">
+        <div class="hint" id="animHint" style="padding:0 0 5px">🎈 Floating — smooth up/down hover.</div>
+        <div class="slider"><label>Amplitude</label><input type="range" id="sAmp" min="0" max="100" step="1" value="45" /><span class="val" id="vAmp">45</span></div>
+        <div class="slider"><label>Speed</label><input type="range" id="sSpeed" min="0" max="100" step="1" value="45" /><span class="val" id="vSpeed">45</span></div>
       </div>
       <div class="row">
         <button id="resetCalib">Reset</button>
@@ -291,17 +309,49 @@ function drawDiamond(cx, cy, stroke, fill) {
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
 }
 
+/* ----------------------------- animation ----------------------------- */
+// Live preview clock + the per-asset motion the world builder visualises.
+// Two kinds, decor only: PUPPET breathes (vertical squash/stretch planted at
+// the base — middle-bottom to middle-top) and FLOATING hovers (smooth up/down).
+const ANIM = { t: 0, raf: null };
+const animActive = (a) => a && a.category === 'decor' && a.anim && a.anim.type !== 'none';
+function anyAnimating() { return S.placements.some((p) => animActive(assetById(p.assetId))); }
+function animWave(a, col, row) {
+  // amplitude 0..1, a Hz from speed, a per-instance phase so a field of props
+  // doesn't pulse in lockstep. Returns sin(phase) in [-1,1].
+  const freq = 0.18 + (Math.max(0, Math.min(100, a.anim.speed)) / 100) * 1.5; // Hz
+  const phase = ANIM.t * freq * Math.PI * 2 + col * 1.7 + row * 0.9;
+  return Math.sin(phase);
+}
+function animLoop(now) {
+  ANIM.t = now / 1000;
+  if (anyAnimating()) { render(true); ANIM.raf = requestAnimationFrame(animLoop); }
+  else ANIM.raf = null;
+}
+function ensureAnimLoop() { if (ANIM.raf == null && anyAnimating()) ANIM.raf = requestAnimationFrame(animLoop); }
+
 /** Draw one element's image with its asset calibration. Returns screen rect. */
 function drawElement(a, col, row) {
   const wc = worldOf(col, row);
   const s = toScreen(wc.x + a.offX, wc.y + a.offY);
   const w = a.w * a.scale * S.cam.zoom, h = a.h * a.scale * S.cam.zoom;
-  const left = s.x - a.anchorX * w, top = s.y - a.anchorY * h;
-  ctx.drawImage(a.img, left, top, w, h);
-  return { left, top, w, h };
+  let left = s.x - a.anchorX * w, top = s.y - a.anchorY * h, dh = h;
+  if (animActive(a)) {
+    const amp = Math.max(0, Math.min(100, a.anim.amplitude)) / 100;
+    const wave = animWave(a, col, row);
+    if (a.anim.type === 'floating') {
+      top -= wave * amp * h * 0.25;                 // bob up/down ~¼ height at full
+    } else {                                          // puppet: scaleY about the base
+      const sy = 1 + wave * amp * 0.26;               // breathe ±26% at full amplitude
+      dh = h * sy;
+      top = (top + h) - dh;                           // keep the bottom edge planted
+    }
+  }
+  ctx.drawImage(a.img, left, top, w, dh);
+  return { left, top, w, h: dh };
 }
 
-function render() {
+function render(transient) {
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   const W = wrap.clientWidth, H = wrap.clientHeight;
   ctx.fillStyle = '#2c2733';
@@ -391,7 +441,7 @@ function render() {
     ctx.fillText(label, s.x + 23, s.y - 16);
     ctx.restore();
   }
-  scheduleSave(); // debounced auto-save on any state/view change (no-op until ready)
+  if (!transient) scheduleSave(); // debounced auto-save (skipped on animation frames)
 }
 
 /* --------------------------- asset library --------------------------- */
@@ -412,8 +462,10 @@ function renderAssets() {
     const card = document.createElement('div');
     card.className = 'assetCard' + (a.id === S.selectedAssetId ? ' active' : '');
     const calibrated = a.offX || a.offY || a.scale !== 1 || a.anchorY !== (a.category === 'tile' ? 0.5 : 0);
+    const animated = a.category === 'decor' && a.anim && a.anim.type !== 'none';
     card.innerHTML =
       (calibrated ? `<span class="calib" title="calibrated offset">✎ ${a.offX|0},${a.offY|0}</span>` : '') +
+      (animated ? `<span class="animb" title="${a.anim.type} animation">${a.anim.type === 'puppet' ? '🤸' : '🎈'}</span>` : '') +
       `<button class="del" title="delete asset + its placements">✕</button>` +
       `<img src="${a.img.src}" /><div class="nm" title="${a.file}">${a.name}</div>`;
     card.querySelector('img').onclick = () => selectAsset(a.id);
@@ -579,7 +631,13 @@ function makeAsset(img, file, category, calib) {
     offX: calib?.offX ?? 0, offY: calib?.offY ?? 0, scale: calib?.scale ?? 1,
     anchorX: calib?.anchorX ?? 0.5,
     // tile/decotile/background = centred, blocker = sits slightly high over the cell, decor = top-centred
-    anchorY: calib?.anchorY ?? (category === 'tile' || category === 'decotile' || category === 'background' ? 0.5 : category === 'blocker' ? 0.62 : 0)
+    anchorY: calib?.anchorY ?? (category === 'tile' || category === 'decotile' || category === 'background' ? 0.5 : category === 'blocker' ? 0.62 : 0),
+    // live-preview animation (decor only): puppet = breathe from the base, floating = hover
+    anim: {
+      type: calib?.anim?.type ?? 'none',
+      amplitude: calib?.anim?.amplitude ?? 45,
+      speed: calib?.anim?.speed ?? 45
+    }
   };
   if (!S.selectedAssetId && category === S.category) S.selectedAssetId = id;
   return id;
@@ -635,6 +693,7 @@ function paintAt(col, row) {
     const pl = { id: uid(), assetId: a.id, col, row, z: S.nextZ++ };
     if (a.category === 'blocker') pl.level = S.activeLevel; // tag the level it blocks
     S.placements.push(pl);
+    if (animActive(a)) ensureAnimLoop(); // a just-placed animated decor starts moving
   }
 }
 function eraseAt(col, row) {
@@ -838,6 +897,7 @@ function inspectedAsset() {
 }
 function refreshInspector() {
   const a = inspectedAsset();
+  updateAnimUI(); // toggles the top-bar tool + sidebar sliders (hides them when not a decor)
   const target = document.getElementById('inspTarget');
   if (!a) { target.textContent = 'Select an asset or a placed element.'; return; }
   const p = S.selectedPlacement ? placementById(S.selectedPlacement) : null;
@@ -868,6 +928,54 @@ for (const [prop, [sid, vid, fmt]] of Object.entries(sliders)) {
     renderAssets(); render();
   });
 }
+
+/* --------------------------- decor animation --------------------------- */
+// Sync the top-bar tool (visible only for a selected decor) + the sidebar
+// amplitude/speed sliders to the inspected asset.
+function updateAnimUI() {
+  const a = inspectedAsset();
+  const isDecor = !!a && a.category === 'decor';
+  document.getElementById('animTool').style.display = isDecor ? 'inline-flex' : 'none';
+  document.getElementById('animSep').style.display = isDecor ? '' : 'none';
+  const t = isDecor ? (a.anim?.type ?? 'none') : 'none';
+  document.getElementById('animNone').classList.toggle('active', isDecor && t === 'none');
+  document.getElementById('animPuppet').classList.toggle('active', isDecor && t === 'puppet');
+  document.getElementById('animFloat').classList.toggle('active', isDecor && t === 'floating');
+  const showSettings = isDecor && t !== 'none';
+  document.getElementById('animRow').style.display = showSettings ? '' : 'none';
+  if (showSettings) {
+    document.getElementById('sAmp').value = a.anim.amplitude;
+    document.getElementById('vAmp').textContent = a.anim.amplitude;
+    document.getElementById('sSpeed').value = a.anim.speed;
+    document.getElementById('vSpeed').textContent = a.anim.speed;
+    document.getElementById('animHint').innerHTML = t === 'puppet'
+      ? '🤸 Puppet — breathing squash/stretch, planted at the base.'
+      : '🎈 Floating — smooth up/down hover.';
+  }
+}
+function setAnim(type) {
+  const a = inspectedAsset();
+  if (!a || a.category !== 'decor') { say('Select a decor asset first (only decor animates).'); return; }
+  a.anim = a.anim || { type: 'none', amplitude: 45, speed: 45 };
+  a.anim.type = type;
+  updateAnimUI(); ensureAnimLoop(); renderAssets(); render();
+  say(type === 'none'
+    ? `Animation off for <b>${a.name}</b>.`
+    : `<b>${a.name}</b> now ${type === 'puppet' ? 'breathes (🤸 puppet)' : 'floats (🎈)'} — tune amplitude & speed on the right.`);
+}
+document.getElementById('animNone').onclick = () => setAnim('none');
+document.getElementById('animPuppet').onclick = () => setAnim('puppet');
+document.getElementById('animFloat').onclick = () => setAnim('floating');
+for (const [sid, vid, key] of [['sAmp', 'vAmp', 'amplitude'], ['sSpeed', 'vSpeed', 'speed']]) {
+  document.getElementById(sid).addEventListener('input', (e) => {
+    const a = inspectedAsset();
+    if (!a || !a.anim) return;
+    a.anim[key] = Math.round(+e.target.value);
+    document.getElementById(vid).textContent = a.anim[key];
+    ensureAnimLoop(); render();
+  });
+}
+
 document.getElementById('resetCalib').onclick = () => {
   const a = inspectedAsset(); if (!a) return;
   a.offX = 0; a.offY = 0; a.scale = 1; a.anchorX = 0.5; a.anchorY = a.category === 'tile' ? 0.5 : 0;
@@ -897,15 +1005,22 @@ function dataURLToBlob(durl) {
 }
 function buildDoc(embed) {
   const world = document.getElementById('worldName').value.trim() || 'world';
-  const assets = Object.values(S.assets).map((a) => ({
-    id: a.id, name: a.name, category: a.category, file: a.file,
-    width: a.w, height: a.h,
-    /** the calibration: drop offX/offY into the game placement, anchor into anchors.json */
-    calibration: {
-      offsetX: a.offX, offsetY: a.offY, scale: +a.scale.toFixed(4),
-      anchor: { x: +a.anchorX.toFixed(4), y: +a.anchorY.toFixed(4) }
+  const assets = Object.values(S.assets).map((a) => {
+    const out = {
+      id: a.id, name: a.name, category: a.category, file: a.file,
+      width: a.w, height: a.h,
+      /** the calibration: drop offX/offY into the game placement, anchor into anchors.json */
+      calibration: {
+        offsetX: a.offX, offsetY: a.offY, scale: +a.scale.toFixed(4),
+        anchor: { x: +a.anchorX.toFixed(4), y: +a.anchorY.toFixed(4) }
+      }
+    };
+    // decor motion the game can replay (puppet breathe / floating hover)
+    if (a.anim && a.anim.type !== 'none') {
+      out.animation = { type: a.anim.type, amplitude: a.anim.amplitude, speed: a.anim.speed };
     }
-  }));
+    return out;
+  });
   // normalise z to a compact 0..n per cell-decor stack for clean output.
   const placements = S.placements
     .slice()
@@ -1000,7 +1115,8 @@ function loadWorldDoc(doc, label) {
     img.onload = () => {
       const id = makeAsset(img, ad.file, ad.category, {
         offX: ad.calibration.offsetX, offY: ad.calibration.offsetY,
-        scale: ad.calibration.scale, anchorX: ad.calibration.anchor.x, anchorY: ad.calibration.anchor.y
+        scale: ad.calibration.scale, anchorX: ad.calibration.anchor.x, anchorY: ad.calibration.anchor.y,
+        anim: ad.animation
       });
       S.assets[id].name = ad.name; byName[`${ad.category}|${ad.name}`] = id;
       if (--remaining === 0) {
@@ -1128,7 +1244,8 @@ function serializeSession() {
       .map((s) => ({ key: s.key, src: s.src, fileName: s.fileName })),
     assets: list.map((a) => ({
       name: a.name, category: a.category, file: a.file, src: a.img.src,
-      offX: a.offX, offY: a.offY, scale: a.scale, anchorX: a.anchorX, anchorY: a.anchorY
+      offX: a.offX, offY: a.offY, scale: a.scale, anchorX: a.anchorX, anchorY: a.anchorY,
+      anim: a.anim
     })),
     placements: S.placements.map((p) => {
       const o = { a: idToIdx.get(p.assetId), col: p.col, row: p.row, z: p.z };
@@ -1151,7 +1268,7 @@ function saveNow() {
   }
 }
 function scheduleSave() { if (!S.ready) return; clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 600); }
-function markReady() { S.ready = true; renderCamRows(); saveNow(); loadStarterBackgrounds(); }
+function markReady() { S.ready = true; renderCamRows(); saveNow(); loadStarterBackgrounds(); ensureAnimLoop(); }
 
 /** Ensure the preloaded background tiles are present after any world loads
  *  (session restore, default world, or starter set) — deduped by file. */
@@ -1214,7 +1331,7 @@ function restoreSession() {
   doc.assets.forEach((ad, i) => {
     const img = new Image();
     img.onload = () => {
-      const id = makeAsset(img, ad.file, ad.category, { offX: ad.offX, offY: ad.offY, scale: ad.scale, anchorX: ad.anchorX, anchorY: ad.anchorY });
+      const id = makeAsset(img, ad.file, ad.category, { offX: ad.offX, offY: ad.offY, scale: ad.scale, anchorX: ad.anchorX, anchorY: ad.anchorY, anim: ad.anim });
       S.assets[id].name = ad.name; idxToId[i] = id; finalize();
     };
     img.onerror = () => { finalize(); }; // skip a missing asset, keep the rest
