@@ -314,14 +314,45 @@ function drawDiamond(cx, cy, stroke, fill) {
 // Two kinds, decor only: PUPPET breathes (vertical squash/stretch planted at
 // the base — middle-bottom to middle-top) and FLOATING hovers (smooth up/down).
 const ANIM = { t: 0, raf: null };
+// SINGLE SOURCE OF TRUTH for the motion: the live preview AND the exported spec
+// both derive from these — so the JSON the game ingests reproduces the builder
+// pixel-for-pixel without knowing any of these constants.
+const ANIM_MODEL = {
+  freqBase: 0.18, freqSpan: 1.5,    // frequencyHz = freqBase + speed/100 * freqSpan
+  puppetMax: 0.26,                  // puppet: peak |scaleY − 1| at amplitude 100
+  floatMax: 0.25,                   // floating: peak offset ÷ sprite height at amplitude 100
+  phasePerCol: 1.7, phasePerRow: 0.9 // per-instance desync (radians) by grid cell
+};
+const clamp01 = (v) => Math.max(0, Math.min(100, v)) / 100;
+const animFreq = (anim) => ANIM_MODEL.freqBase + clamp01(anim.speed) * ANIM_MODEL.freqSpan;
 const animActive = (a) => a && a.category === 'decor' && a.anim && a.anim.type !== 'none';
 function anyAnimating() { return S.placements.some((p) => animActive(assetById(p.assetId))); }
-function animWave(a, col, row) {
-  // amplitude 0..1, a Hz from speed, a per-instance phase so a field of props
-  // doesn't pulse in lockstep. Returns sin(phase) in [-1,1].
-  const freq = 0.18 + (Math.max(0, Math.min(100, a.anim.speed)) / 100) * 1.5; // Hz
-  const phase = ANIM.t * freq * Math.PI * 2 + col * 1.7 + row * 0.9;
+function animWave(anim, col, row) {
+  // sin(phase) in [-1,1]; the per-instance phase keeps a field of props from
+  // pulsing in lockstep — EXACTLY the phase the export documents.
+  const phase = ANIM.t * 2 * Math.PI * animFreq(anim) + col * ANIM_MODEL.phasePerCol + row * ANIM_MODEL.phasePerRow;
   return Math.sin(phase);
+}
+// Fully-resolved, engine-ready playback spec for the export. No builder-internal
+// constants are needed downstream: the game multiplies `amount` by its own
+// sprite (heightFraction) or applies it as a scale delta (scaleDelta).
+function resolveAnim(anim) {
+  const isPuppet = anim.type === 'puppet';
+  const freq = animFreq(anim);
+  const amount = (isPuppet ? ANIM_MODEL.puppetMax : ANIM_MODEL.floatMax) * clamp01(anim.amplitude);
+  return {
+    transform: isPuppet ? 'scaleY' : 'translateY',
+    axis: 'y', wave: 'sine', rest: 'symmetric',
+    frequencyHz: +freq.toFixed(5), periodMs: Math.round(1000 / freq),
+    amount: +amount.toFixed(5),
+    amountUnit: isPuppet ? 'scaleDelta' : 'heightFraction',
+    pivot: isPuppet ? 'bottom-center' : 'center',
+    phasePerCol: ANIM_MODEL.phasePerCol, phasePerRow: ANIM_MODEL.phasePerRow,
+    timeUnit: 'seconds',
+    formula: isPuppet
+      ? 'scaleY = 1 + amount*sin(2*PI*frequencyHz*tSec + col*phasePerCol + row*phasePerRow); scaled about pivot bottom-center'
+      : 'spriteY -= amount*spriteHeightPx*sin(2*PI*frequencyHz*tSec + col*phasePerCol + row*phasePerRow)'
+  };
 }
 function animLoop(now) {
   ANIM.t = now / 1000;
@@ -337,12 +368,12 @@ function drawElement(a, col, row) {
   const w = a.w * a.scale * S.cam.zoom, h = a.h * a.scale * S.cam.zoom;
   let left = s.x - a.anchorX * w, top = s.y - a.anchorY * h, dh = h;
   if (animActive(a)) {
-    const amp = Math.max(0, Math.min(100, a.anim.amplitude)) / 100;
-    const wave = animWave(a, col, row);
+    const amp = clamp01(a.anim.amplitude);
+    const wave = animWave(a.anim, col, row);
     if (a.anim.type === 'floating') {
-      top -= wave * amp * h * 0.25;                 // bob up/down ~¼ height at full
+      top -= wave * ANIM_MODEL.floatMax * amp * h;    // bob up/down around rest
     } else {                                          // puppet: scaleY about the base
-      const sy = 1 + wave * amp * 0.26;               // breathe ±26% at full amplitude
+      const sy = 1 + wave * ANIM_MODEL.puppetMax * amp;
       dh = h * sy;
       top = (top + h) - dh;                           // keep the bottom edge planted
     }
@@ -1015,9 +1046,14 @@ function buildDoc(embed) {
         anchor: { x: +a.anchorX.toFixed(4), y: +a.anchorY.toFixed(4) }
       }
     };
-    // decor motion the game can replay (puppet breathe / floating hover)
+    // decor motion the game can replay (puppet breathe / floating hover). Carries
+    // BOTH the raw controls (re-editable) AND a fully-resolved `model` so the game
+    // can reproduce it from JSON alone — no builder constants needed downstream.
     if (a.anim && a.anim.type !== 'none') {
-      out.animation = { type: a.anim.type, amplitude: a.anim.amplitude, speed: a.anim.speed };
+      out.animation = {
+        type: a.anim.type, amplitude: a.anim.amplitude, speed: a.anim.speed,
+        model: resolveAnim(a.anim)
+      };
     }
     return out;
   });
