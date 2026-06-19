@@ -141,7 +141,7 @@
     </div>
     <div class="hint" id="catHint">Tiles are the floor — one per cell. Click a card to select, then Paint.</div>
     <div id="uploadRow" style="padding:0 8px 6px"><button id="uploadBtn" style="width:100%">＋ Upload <span id="uploadCat">tile</span> PNGs…</button>
-      <input id="fileInput" type="file" accept="image/png,image/webp" multiple hidden /></div>
+      <input id="fileInput" type="file" accept="image/png,image/webp,image/jpeg" multiple hidden /></div>
     <div id="mergeActions" style="padding:0 8px 6px; display:none; gap:6px">
       <button id="resetMerge" style="width:100%" title="Revert every merge slot to its placeholder">↺ Reset all merge art to placeholders</button>
     </div>
@@ -752,7 +752,7 @@ document.getElementById('fileInput').onchange = async (e) => {
 function makeAsset(img, file, category, calib) {
   const id = uid();
   S.assets[id] = {
-    id, name: file.replace(/\.(png|webp)$/i, ''), category, file, img,
+    id, name: file.replace(/\.(png|webp|jpe?g)$/i, ''), category, file, img,
     w: img.naturalWidth, h: img.naturalHeight,
     offX: calib?.offX ?? 0, offY: calib?.offY ?? 0, scale: calib?.scale ?? 1,
     anchorX: calib?.anchorX ?? 0.5,
@@ -1287,6 +1287,14 @@ function buildDoc(embed) {
     for (const p of S.placements) { minC = Math.min(minC, p.col); maxC = Math.max(maxC, p.col); minR = Math.min(minR, p.row); maxR = Math.max(maxR, p.row); }
     bounds = { minCol: minC, maxCol: maxC, minRow: minR, maxRow: maxR };
   }
+  // the background's cell extent — the game clamps its camera to this (the frontier).
+  let backgroundBounds = null;
+  const bgCells = S.placements.filter((p) => isBackground(assetById(p.assetId)));
+  if (bgCells.length) {
+    let minC = 1e9, maxC = -1e9, minR = 1e9, maxR = -1e9;
+    for (const p of bgCells) { minC = Math.min(minC, p.col); maxC = Math.max(maxC, p.col); minR = Math.min(minR, p.row); maxR = Math.max(maxR, p.row); }
+    backgroundBounds = { minCol: minC, maxCol: maxC, minRow: minR, maxRow: maxR };
+  }
   // camera keyframes: focal world point + zoom, plus the focal cell (col,row)
   // so the game can frame it regardless of its own tile size / viewport.
   const cameraKeyframes = Object.entries(S.cameraKeyframes)
@@ -1316,7 +1324,7 @@ function buildDoc(embed) {
     // width/height stay first for the existing ingest; skew/angle describe the
     // full parametric projection (angle = edge pitch in degrees, skew = shear).
     tile: { width: S.tileW, height: S.tileH, skew: +(+S.gridSkew || 0).toFixed(2), angle: +gridAngleDeg().toFixed(2) },
-    bounds, assets, placements, levels, cameraKeyframes, mergeAssets,
+    bounds, backgroundBounds, assets, placements, levels, cameraKeyframes, mergeAssets,
     cameraZoom: { min: +S.gameZoom.min, max: +S.gameZoom.max } // in-game wheel-zoom clamp
   };
   // Invisible tiles export a transparent pixel (the card icon is editor-only).
