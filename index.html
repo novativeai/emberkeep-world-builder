@@ -482,21 +482,6 @@ function render(transient) {
   for (const c of corners) { minC = Math.min(minC, c.col); maxC = Math.max(maxC, c.col); minR = Math.min(minR, c.row); maxR = Math.max(maxR, c.row); }
   minC -= 2; maxC += 2; minR -= 2; maxR += 2;
 
-  // grid
-  if (S.showGrid) {
-    for (let row = minR; row <= maxR; row++) {
-      for (let col = minC; col <= maxC; col++) {
-        const wc = worldOf(col, row);
-        const s = toScreen(wc.x, wc.y);
-        const even = ((col + row) % 2 + 2) % 2 === 0;
-        drawDiamond(s.x, s.y, 'rgba(255,246,232,0.10)', even ? 'rgba(255,246,232,0.03)' : 'transparent');
-      }
-    }
-    // origin cell highlight
-    const o = toScreen(0, 0);
-    drawDiamond(o.x, o.y, 'rgba(247,164,55,0.6)', 'rgba(247,164,55,0.08)');
-  }
-
   // backgrounds (below the floor), then floor, then everything above (decor +
   // blockers), each painter-sorted.
   const inView = (p) => p.col >= minC && p.col <= maxC && p.row >= minR && p.row <= maxR;
@@ -532,6 +517,22 @@ function render(transient) {
     const rect = drawElement(a, p.col, p.row);
     hi(p, rect);
     if (a.category === 'blocker' && S.showLevelTags) levelBadge(p, rect);
+  }
+
+  // grid ON TOP — always in front of tiles/backgrounds/decor so the cells stay
+  // visible as an editing guide (it used to be hidden behind the background).
+  if (S.showGrid) {
+    for (let row = minR; row <= maxR; row++) {
+      for (let col = minC; col <= maxC; col++) {
+        const wc = worldOf(col, row);
+        const s = toScreen(wc.x, wc.y);
+        const even = ((col + row) % 2 + 2) % 2 === 0;
+        drawDiamond(s.x, s.y, 'rgba(255,246,232,0.10)', even ? 'rgba(255,246,232,0.03)' : 'transparent');
+      }
+    }
+    // origin cell highlight
+    const o = toScreen(0, 0);
+    drawDiamond(o.x, o.y, 'rgba(247,164,55,0.6)', 'rgba(247,164,55,0.08)');
   }
 
   // hovered cell marker
