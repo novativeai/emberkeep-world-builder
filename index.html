@@ -95,7 +95,8 @@
         title="Level tag stamped on each cloud blocker you place (a group per level)" /></label>
     <span class="sep"></span>
     <button class="tool active" id="toolPaint" title="B — click cells to place the selected asset">🖌 Paint</button>
-    <button class="tool" id="toolSelect" title="V — click a placed element to select & adjust it">✥ Select</button>
+    <button class="tool" id="toolSelect" title="V — click a placed element to select & adjust it">❖ Select</button>
+    <button class="tool" id="toolMove" title="M — drag a decor / background / 3D element to move it freely, off the grid">✥ Move</button>
     <button class="tool" id="toolErase" title="E — click to remove the topmost element on a cell">⌫ Erase</button>
     <button class="tool" id="toolPan" title="H — drag to pan (also: hold Space, middle/right-drag, or arrow keys)">✋ Pan</button>
     <span class="sep"></span>
@@ -433,8 +434,9 @@ function animLoop(now) {
 function ensureAnimLoop() { if (ANIM.raf == null && anyAnimating()) ANIM.raf = requestAnimationFrame(animLoop); }
 
 /** Draw one element's image with its asset calibration. Returns screen rect. */
-function drawElement(a, col, row) {
+function drawElement(a, col, row, dx = 0, dy = 0) {
   const wc = worldOf(col, row);
+  wc.x += dx; wc.y += dy; // per-placement free offset (decor/background/3D moved off-grid)
   if (a.invisible) {
     // No sprite — the background shows straight through. We paint a faint
     // editor-only diamond so the author can see & select the playable cell;
@@ -510,13 +512,20 @@ function render(transient) {
     ctx.fillText(String(lvl), bx, by + 0.5);
     ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
   };
-  for (const p of backgrounds) { const a = assetById(p.assetId); if (a) hi(p, drawElement(a, p.col, p.row)); }
-  for (const p of tiles) { const a = assetById(p.assetId); if (a) hi(p, drawElement(a, p.col, p.row)); }
+  // draw each placement at its cell + per-placement free offset, and record the
+  // screen rect so picking works even when an element is moved off its cell.
+  S.hitRects = [];
+  const drawP = (p) => {
+    const a = assetById(p.assetId); if (!a) return null;
+    const rect = drawElement(a, p.col, p.row, p.dx || 0, p.dy || 0);
+    hi(p, rect); S.hitRects.push({ p, rect });
+    return rect;
+  };
+  for (const p of backgrounds) drawP(p);
+  for (const p of tiles) drawP(p);
   for (const p of above) {
-    const a = assetById(p.assetId); if (!a) continue;
-    const rect = drawElement(a, p.col, p.row);
-    hi(p, rect);
-    if (a.category === 'blocker' && S.showLevelTags) levelBadge(p, rect);
+    const rect = drawP(p); const a = assetById(p.assetId);
+    if (rect && a && a.category === 'blocker' && S.showLevelTags) levelBadge(p, rect);
   }
 
   // grid ON TOP — always in front of tiles/backgrounds/decor so the cells stay
@@ -601,6 +610,9 @@ function renderAssets() {
       if (S.selectedAssetId === a.id) S.selectedAssetId = null;
       renderAssets(); render(); refreshInspector();
     };
+    // drag the card straight onto the canvas to drop the asset anywhere
+    card.draggable = true;
+    card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(a.id)); e.dataTransfer.effectAllowed = 'copy'; });
     grid.appendChild(card);
   }
 }
@@ -825,7 +837,7 @@ function ensureInvisibleTile() {
 /* --------------------------- tools & input --------------------------- */
 function setTool(tool) {
   S.tool = tool;
-  for (const [id, t] of [['toolPaint', 'paint'], ['toolSelect', 'select'], ['toolErase', 'erase'], ['toolPan', 'pan']])
+  for (const [id, t] of [['toolPaint', 'paint'], ['toolSelect', 'select'], ['toolMove', 'move'], ['toolErase', 'erase'], ['toolPan', 'pan']])
     document.getElementById(id).classList.toggle('active', t === tool);
   updateCursor();
   render();
@@ -833,12 +845,25 @@ function setTool(tool) {
 /** Cursor reflects the active pan affordance (hand) vs editing (crosshair). */
 function updateCursor() {
   const panning = S.tool === 'pan' || S.spaceHeld;
-  stage.style.cursor = S.drag && S.drag.kind === 'pan' ? 'grabbing' : panning ? 'grab' : 'crosshair';
+  stage.style.cursor = S.drag && (S.drag.kind === 'pan' || S.drag.kind === 'movefree') ? 'grabbing'
+    : panning ? 'grab' : S.tool === 'move' ? 'move' : 'crosshair';
 }
 document.getElementById('toolPaint').onclick = () => setTool('paint');
 document.getElementById('toolSelect').onclick = () => setTool('select');
+document.getElementById('toolMove').onclick = () => setTool('move');
 document.getElementById('toolErase').onclick = () => setTool('erase');
 document.getElementById('toolPan').onclick = () => setTool('pan');
+
+/** Topmost placement whose drawn rect contains the screen point (handles free
+ *  off-grid elements that aren't at their cell). `filter` narrows by asset. */
+function pickAt(sx, sy, filter) {
+  for (let i = S.hitRects.length - 1; i >= 0; i--) {
+    const { p, rect } = S.hitRects[i];
+    if (filter && !filter(assetById(p.assetId))) continue;
+    if (sx >= rect.left && sx <= rect.left + rect.w && sy >= rect.top && sy <= rect.top + rect.h) return p;
+  }
+  return null;
+}
 
 function topElementAt(col, row) {
   // topmost non-floor (decor/blocker) first, then the floor tile, then the background.
@@ -869,12 +894,11 @@ function paintAt(col, row) {
     if (a.is3d) startCrystalLoop();      // keep the placed crystal spinning
   }
 }
-function eraseAt(col, row) {
-  const top = topElementAt(col, row);
-  if (top) {
-    S.placements = S.placements.filter((p) => p.id !== top.id);
-    if (S.selectedPlacement === top.id) S.selectedPlacement = null;
-  }
+function eraseAt(col, row) { removePlacement(topElementAt(col, row)); }
+function removePlacement(p) {
+  if (!p) return;
+  S.placements = S.placements.filter((x) => x.id !== p.id);
+  if (S.selectedPlacement === p.id) S.selectedPlacement = null;
 }
 
 stage.addEventListener('mousedown', (e) => {
@@ -886,11 +910,20 @@ stage.addEventListener('mousedown', (e) => {
   }
   const cell = cellOf(sx, sy);
   if (S.tool === 'paint') { paintAt(cell.col, cell.row); S.drag = { kind: 'paint', last: `${cell.col},${cell.row}` }; }
-  else if (S.tool === 'erase') { eraseAt(cell.col, cell.row); S.drag = { kind: 'erase' }; }
-  else { // select
-    const top = topElementAt(cell.col, cell.row);
-    S.selectedPlacement = top ? top.id : null;
-    if (top) { S.selectedAssetId = top.assetId; const a = assetById(top.assetId); if (a.category !== S.category) setCategory(a.category); }
+  else if (S.tool === 'erase') { removePlacement(pickAt(sx, sy)); S.drag = { kind: 'erase' }; }
+  else if (S.tool === 'move') { // grab a decor/background/3D element + drag it off-grid
+    const p = pickAt(sx, sy, (a) => a && !isFloor(a));
+    if (p) {
+      S.selectedPlacement = p.id; S.selectedAssetId = p.assetId;
+      const a = assetById(p.assetId); if (a.category !== S.category) setCategory(a.category);
+      S.drag = { kind: 'movefree', id: p.id, sx, sy, dx0: p.dx || 0, dy0: p.dy || 0 };
+      refreshInspector(); renderAssets(); say(`Moving <b>${a.name}</b> freely — drag to position it off the grid.`);
+    } else { S.selectedPlacement = null; say('Move tool: grab a decor, background or 3D element to drag it freely.'); }
+  }
+  else { // select (rect-based so off-grid elements are pickable)
+    const p = pickAt(sx, sy);
+    S.selectedPlacement = p ? p.id : null;
+    if (p) { S.selectedAssetId = p.assetId; const a = assetById(p.assetId); if (a.category !== S.category) setCategory(a.category); }
     refreshInspector(); renderAssets();
   }
   render();
@@ -903,11 +936,35 @@ window.addEventListener('mousemove', (e) => {
   if (S.drag) {
     if (S.drag.kind === 'pan') { S.cam.x = S.drag.camX + (sx - S.drag.sx); S.cam.y = S.drag.camY + (sy - S.drag.sy); }
     else if (S.drag.kind === 'paint') { const k = `${S.hover.col},${S.hover.row}`; if (k !== S.drag.last) { paintAt(S.hover.col, S.hover.row); S.drag.last = k; } }
-    else if (S.drag.kind === 'erase') eraseAt(S.hover.col, S.hover.row);
+    else if (S.drag.kind === 'erase') removePlacement(pickAt(sx, sy));
+    else if (S.drag.kind === 'movefree') { const p = placementById(S.drag.id); if (p) { p.dx = S.drag.dx0 + (sx - S.drag.sx) / S.cam.zoom; p.dy = S.drag.dy0 + (sy - S.drag.sy) / S.cam.zoom; } }
   }
   render();
 });
 window.addEventListener('mouseup', () => { S.drag = null; updateCursor(); });
+
+/* ----------------- drag an asset from the sidebar onto the canvas ------ */
+stage.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+stage.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const a = assetById(+e.dataTransfer.getData('text/plain'));
+  if (!a) return;
+  const r = stage.getBoundingClientRect();
+  const sx = e.clientX - r.left, sy = e.clientY - r.top;
+  const cell = cellOf(sx, sy);
+  if (isFloor(a)) { S.selectedAssetId = a.id; paintAt(cell.col, cell.row); } // floor snaps to the cell
+  else { // decor / background / blocker / 3D drop free, right where you let go
+    const w = toWorld(sx, sy), base = worldOf(cell.col, cell.row);
+    const pl = { id: uid(), assetId: a.id, col: cell.col, row: cell.row, z: S.nextZ++, dx: w.x - base.x - a.offX, dy: w.y - base.y - a.offY };
+    if (a.category === 'blocker') pl.level = S.activeLevel;
+    S.placements.push(pl);
+    if (animActive(a)) ensureAnimLoop();
+    if (a.is3d) startCrystalLoop();
+    S.selectedPlacement = pl.id; S.selectedAssetId = a.id;
+    say(`Dropped <b>${a.name}</b> freely on the canvas.`);
+  }
+  render(); renderAssets(); refreshInspector();
+});
 stage.addEventListener('wheel', (e) => {
   stopFly();
   e.preventDefault();
@@ -1093,6 +1150,7 @@ window.addEventListener('keydown', (e) => {
   if (/INPUT|SELECT/.test(e.target.tagName)) return;
   if (e.key === 'b' || e.key === 'B') setTool('paint');
   if (e.key === 'v' || e.key === 'V') setTool('select');
+  if (e.key === 'm' || e.key === 'M') setTool('move');
   if (e.key === 'e' || e.key === 'E') setTool('erase');
   if (e.key === 'h' || e.key === 'H') setTool('pan');
   if (e.key === 'f' || e.key === 'F') fitView();
@@ -1270,6 +1328,7 @@ function buildDoc(embed) {
       const a = assetById(p.assetId);
       const out = { asset: a.name, category: a.category, col: p.col, row: p.row, z: p.z };
       if (a.category === 'blocker') out.level = p.level ?? 1;
+      if (p.dx || p.dy) { out.dx = Math.round(p.dx); out.dy = Math.round(p.dy); } // free off-grid offset
       return out;
     });
   // levels map: which cells each level's clouds cover (what the game unfogs per level).
@@ -1381,6 +1440,7 @@ function loadWorldDoc(doc, label) {
           if (!aid) continue;
           const place = { id: uid(), assetId: aid, col: pl.col, row: pl.row, z: pl.z ?? 0 };
           if (pl.level !== undefined) place.level = pl.level;
+          if (pl.dx || pl.dy) { place.dx = pl.dx; place.dy = pl.dy; }
           S.placements.push(place);
         }
         S.nextZ = Math.max(1, ...S.placements.map((p) => Math.abs(p.z))) + 1;
@@ -1503,7 +1563,7 @@ function serializeSession() {
     showGrid: S.showGrid, showLevelTags: S.showLevelTags, nextZ: S.nextZ,
     cameraKeyframes: S.cameraKeyframes, gameZoom: S.gameZoom,
     // 3D crystal placements (the crystal itself rebuilds from code when Three loads)
-    crystalPlacements: S.placements.filter((p) => assetById(p.assetId)?.is3d).map((p) => ({ col: p.col, row: p.row, z: p.z })),
+    crystalPlacements: S.placements.filter((p) => assetById(p.assetId)?.is3d).map((p) => ({ col: p.col, row: p.row, z: p.z, dx: p.dx, dy: p.dy })),
     // only custom merge art needs saving — placeholders are regenerated on load.
     mergeSlots: Object.values(S.mergeSlots)
       .filter((s) => s.custom)
@@ -1516,6 +1576,7 @@ function serializeSession() {
     placements: S.placements.filter((p) => !assetById(p.assetId)?.is3d).map((p) => {
       const o = { a: idToIdx.get(p.assetId), col: p.col, row: p.row, z: p.z };
       if (p.level !== undefined) o.level = p.level;
+      if (p.dx || p.dy) { o.dx = p.dx; o.dy = p.dy; }
       return o;
     })
   };
@@ -1588,6 +1649,7 @@ function restoreSession() {
       if (aid == null) continue;
       const place = { id: uid(), assetId: aid, col: pl.col, row: pl.row, z: pl.z ?? 0 };
       if (pl.level !== undefined) place.level = pl.level;
+      if (pl.dx || pl.dy) { place.dx = pl.dx; place.dy = pl.dy; }
       S.placements.push(place);
     }
     S.selectedAssetId = null;
@@ -1666,7 +1728,7 @@ function ensureCrystalAsset() {
     if (!S.selectedAssetId && S.category === '3d') S.selectedAssetId = id;
   }
   // re-attach any placements restored before the (async) crystal existed
-  for (const pl of pendingCrystal) S.placements.push({ id: uid(), assetId: asset.id, col: pl.col, row: pl.row, z: pl.z ?? S.nextZ++ });
+  for (const pl of pendingCrystal) S.placements.push({ id: uid(), assetId: asset.id, col: pl.col, row: pl.row, z: pl.z ?? S.nextZ++, dx: pl.dx, dy: pl.dy });
   pendingCrystal = [];
   renderAssets(); render(); startCrystalLoop();
   return asset;
